@@ -1,2 +1,2 @@
 # Multimorbidities
-An R package to perform characterisation and analytical studies with focus on multi-morbidities.
+An R package to perform characterization and analytical studies on top of the OMOP-CDM with focus on multi-morbidities.
