@@ -1,5 +1,5 @@
-Package: Multimorbidities
-Title: What the Package Does (One Line, Title Case)
+Package: Multimorbidity
+Title: An RPackage To Perform Multimorbidity Analysis Using Association Rule Mining in OMOP-CDM Data. 
 Version: 0.0.0.9000
 Authors@R: 
     person("First", "Last", , "first.last@example.com", role = c("aut", "cre"),
@@ -11,8 +11,13 @@ Encoding: UTF-8
 Roxygen: list(markdown = TRUE)
 RoxygenNote: 7.2.3
 Remotes:
-  ohdsi/Eunomia,
-  ohdsi/Andromeda@arrow_S4,
-  ohdsi/Cyclops@arrow_S4,
-  ohdsi/FeatureExtraction@arrow_S4, 
-  mi-erasmusmc/AssociationRuleMining@arrow_support
+    ohdsi/Eunomia,
+    ohdsi/Andromeda@arrow_S4,
+    ohdsi/Cyclops@arrow_S4,
+    ohdsi/FeatureExtraction@arrow_S4, 
+    mi-erasmusmc/AssociationRuleMining@arrow_support
+Imports: 
+    Andromeda,
+    arules,
+    AssociationRuleMining,
+    dplyr
