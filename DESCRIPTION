@@ -20,4 +20,5 @@ Imports:
     Andromeda,
     arules,
     AssociationRuleMining,
-    dplyr
+    dplyr,
+    FeatureExtraction
