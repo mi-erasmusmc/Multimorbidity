@@ -1,5 +1,5 @@
 Package: Multimorbidity
-Title: An RPackage To Perform Multimorbidity Analysis Using Association Rule Mining in OMOP-CDM Data. 
+Title: An RPackage To Perform Multimorbidity Analysis Using Association Rule Mining in OMOP-CDM Data 
 Version: 0.0.1
 Authors@R: 
     person("Solon", "Ioannou", , "s.ioannou@erasmusmc.nl", role = c("aut", "cre"),
