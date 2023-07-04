@@ -3,6 +3,7 @@
 export(createAnalysisDetails)
 export(createAssociationRuleMiningSettings)
 export(createCohorts)
+export(createMultimorbidityDataframe)
 export(extractAssociationRules)
 export(extractMultimorbidityCovariates)
 export(prepareInputDataset)
