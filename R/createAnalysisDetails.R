@@ -1,15 +1,15 @@
 #' @export
 createAnalysisDetails <- function(cdmDatabaseSchema,
                                   cohortDatabaseSchema,
-                                  cohortTableNames, 
-                                  cohortDefinitionSet,
                                   cohortTable, 
                                   databaseId, 
+                                  cohortIds,
                                   minCellCount, 
                                   baseUrl, 
-                                  saveSettings, 
+                                  frequentItemsetSettings, 
+                                  # outputFolder, 
                                   databaseName, 
-                                  outputFolder){
+                                  saveDirectory){
   
   settings <- list(cdmDatabaseSchema = cdmDatabaseSchema, 
                    cohortDatabaseSchema = cohortDatabaseSchema, 
@@ -17,11 +17,13 @@ createAnalysisDetails <- function(cdmDatabaseSchema,
                    cohortDefinitionSet = cohortDefinitionSet, 
                    cohortTable = cohortTable, 
                    databaseId = databaseId, 
+                   cohortIds = cohortIds,
                    minCellCount = minCellCount, 
                    baseUrl = baseUrl, 
-                   saveSettings = saveSettings, 
+                   frequentItemsetSettings = frequentItemsetSettings,
                    databaseName = databaseName,
-                   outputFolder = outputFolder
+                   # outputFolder = outputFolder,
+                   saveDirectory = saveDirectory
   )
   
   return(settings)
