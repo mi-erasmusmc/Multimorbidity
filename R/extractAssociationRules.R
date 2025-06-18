@@ -1,22 +1,29 @@
 #' @export
-extractAssociationRules <- function(analysisDetails){
+extractAssociationRules <- function(analysisDetails,
+                                    transactions, 
+                                    getPatientId = FALSE){
   
-  associationRuleSettings <- analysisDetails$associationRuleSettings
   
+  saveDirectory <- analysisDetails$outputFolder
+  associationRuleSettings <- analysisDetails$associationRuleSettings$frequentItemsetSettings
+  
+  controls <- list(verbose = associationRuleSettings$verbose)
   params <- list(support = associationRuleSettings$support, 
                  confidence = associationRuleSettings$confidence, 
                  maxlen = associationRuleSettings$maxLen, 
-                 maxtime = )
+                 maxtime = 0)
   
-  apres <- apriori(trans_sets, 
-                   parameter = list(support = associationRuleSettings$support, maxlen = 20, maxtime = 0),
-                   control = list(verbose = TRUE))
+  apres <- apriori(transactions, 
+                   parameter = params,
+                   control = controls)
   
-  arules::write(apres, 
-                file = "rulesTest_dedupl.csv",
-                sep = ",", 
-                quote = TRUE, 
-                row.names = FALSE)
+  saveRDS(apres, file.path(saveDirectory, "ExtractedRules", "aprioriRules.Rds"))
+  
+  if (getPatientId){
+    patientIds <- arules::supportingTransactions(x = apres, transactions = transactions)
+  saveRDS(patientIds, file.path(saveDirectory, 'ExtractedRules', "patientIds.Rds"))
+    }
+  
   
   return(invisible())
   
