@@ -50,12 +50,13 @@ extractMultimorbidityCovariates <- function(connectionDetails,
   ## Person
   andromedaMM$person <- dplyr::tbl(connection, "person") %>%
     dplyr::filter(person_id %in% subjectIds) %>%
-    dplyr::select(person_id, birth_datetime) %>%
+    dplyr::select(person_id, birth_datetime, gender_concept_id) %>%
     dplyr::collect()
   
   ParallelLogger::logTrace("Getting variable names...")
   ## Concept
-  conceptIdsToInclude <- andromedaMM$conditions %>% dplyr::distinct(condition_concept_id) %>% dplyr::pull()
+  conditionsToInclude <- andromedaMM$conditions %>% dplyr::distinct(condition_concept_id) %>% dplyr::pull()
+  conceptIdsToInclude <- c(conditionsToInclude, 8532, 8507)
   andromedaMM$covariateNames <- dplyr::tbl(connection, "concept") %>%
     dplyr::filter(concept_id %in% conceptIdsToInclude) %>%
     dplyr::select(concept_id, concept_name) %>%
