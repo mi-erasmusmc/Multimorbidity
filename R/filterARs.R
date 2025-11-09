@@ -18,7 +18,7 @@ filterARs <- function(rules, transactions, ...){
   } else {
     
     for (variable in names(input_list)){
-      result <- subset(nonredundant, subset = base::eval(base::parse(text = base::paste(variable, input_list[[variable]]))))
+      result <- subset(nonredundant, subset = base::eval(base::parse(text = base::paste(quote(variable), input_list[[variable]]))))
     }
   }
   
