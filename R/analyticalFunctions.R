@@ -12,7 +12,6 @@ getBaselineCharacteristics <- function(covariateData){
                     .default = "No"
     )) %>%
     dplyr::ungroup() %>%
-    # dplyr::rename("multimorbid" = "multimorbidAtBaseline") %>%
     dplyr::select(rowId, age, gender, multimorbidAtBaseline) %>%
     dplyr::distinct() 
   
