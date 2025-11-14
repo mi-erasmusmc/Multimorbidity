@@ -1,0 +1,1480 @@
+---
+title: "Characterising prevalence and most common sets of multiple long terms conditions"
+format: 
+    html: yes
+    toc: yes
+    toc_float: yes
+    number_sections: yes
+    toc_depth: 5
+editor: visual
+---
+
+# Objective
+
+\|\> To describe the prevalence of multimorbidity in IPCI and identify the clusters of associated diseases.
+
+# Methods
+
+## Study design:
+
+-   Retrospective cohort study.
+
+## Setting:
+
+-   IPCI database. Patient records from 350 General Practioners (GPs) in the Netherlands.
+
+## Participants.
+
+Using the OMOP CDM,\
+- **Cohort definition**: "All patients in the database, above 18 years old, with an observation period starting any time before 31st December 2022."\
+- Information for the participants will be extracted from the database until 31st December 2022. Index date will be the start of the observation period for each patient.\
+- I will also consider as a requirement the presence of at least a year of prior observation as additional eligibility criteria. This was not implement for the results in this report.
+
+## Variables:
+
+-   We extract all information which comprises of 75 conditions that can be used to define multimorbidity according to Ngoran et al (2016).\
+-   We define multimorbidity as the presence of two or more conditions, out of the list of 75 conditions.\
+-   Only the first occurrence of a disease will be included. For example, if a patient experienced stroke on two separate occasions, only the first will be considered an indication that the person is a stroke patient.
+
+## Statistical methods:
+
+1)  Measure prevalence of multimorbidity by simple counting.\
+
+-   Stratification by age and age groups.\
+
+2)  Association rule mining to identify the clusters of associative diseases.\
+3)  Sensitivity analyses:\
+
+-   Possibility to explore other definitions. Other definitions include, usually, a differing number of diseases (cite Ho, Delphi study).\
+
+4)  Potential sources of bias.
+
+-   Data linkage (same patient be represented by multiple observation periods).
+-   Use of concepts instead of phenotype definitions.
+-   Misclassification of conditions.
+-   Varied follow-up times.
+
+# Results
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache = TRUE)
+library(tidyverse)
+library(arules)
+library(Andromeda)
+library(FeatureExtraction)
+library(ggplot2)
+library(tableone)
+library(knitr)
+library(kableExtra)
+library(DT)
+library(magrittr)
+library(gt)
+library(ggpol)
+library(gridExtra)
+library(arulesViz)
+library(plotly)
+library(igraph)
+library(ggraph)
+options(scipen = 999)
+```
+
+```{r, include=FALSE}
+createMultimorbidityDataframe <- function(covariateData){
+  
+  ageDf <- covariateData$covariates %>%
+    dplyr::filter(covariateId  == 1002) %>%
+    arrow::to_duckdb() %>%
+    dplyr::mutate(covariateId = as.character(covariateId)) %>%
+    tidyr::pivot_wider(id_cols = rowId, names_from = covariateId, values_from = covariateValue) %>%
+    dplyr::rename(age = `1002.0`) %>%
+    arrow::to_arrow() %>%
+    dplyr::collect()
+  
+  genderDf <- covariateData$covariates %>%
+    dplyr::filter(covariateId %in% c(8507001, 8532001)) %>%
+    arrow::to_duckdb() %>%
+    dplyr::mutate(gender = case_when(
+      covariateId == 8507001 ~ "Male", 
+      covariateId == 8532001 ~ "Female"
+    )) %>%
+    dplyr::select(rowId, gender) %>%
+    arrow::to_arrow() %>%
+    dplyr::collect()
+  
+  if (FeatureExtraction::isTemporalCovariateData(covariateData)){
+    conditionsDf <- covariateData$covariates %>%
+      dplyr::filter(!(covariateId %in% c(1002, 8507001, 8532001))) %>%
+      arrow::to_duckdb() %>%
+      dplyr::group_by(rowId, covariateId) %>%
+      dplyr::slice_max(timeId, with_ties = FALSE) %>%
+      dplyr::ungroup() %>%
+      dplyr::collect()
+  } else {
+    conditionsDf <- covariateData$covariates %>%
+      dplyr::filter(!(covariateId %in% c(1002, 8507001, 8532001))) %>%
+      dplyr::collect() 
+  }
+  
+  
+  multimorbidityDf <- ageDf %>%  
+    inner_join(genderDf, by = "rowId") %>%
+    full_join(conditionsDf, by = "rowId", multiple = "all") %>%
+    # arrow::to_duckdb() %>%
+    mutate(covariateValue = case_when(
+      is.na(covariateId) ~ "", 
+      .default = as.character(covariateValue)
+    )) %>%
+    # arrow::to_arrow() %>%
+    full_join(covariateData$covariateRef %>% filter(!(covariateId %in% c(1002, 8507001, 8532001))) %>% collect(), by = "covariateId") %>%
+    arrange(rowId) %>% collect()
+  
+  return(multimorbidityDf)
+}
+```
+
+```{r, include=FALSE}
+covariatesTemp <- FeatureExtraction::loadCovariateData("experimentation/Multimorbidity_20240110/tempCovs_cdm_O_selectedConceptIds_obsrvtn_4")
+
+```
+
+```{r, include=FALSE}
+inputTemp <- createMultimorbidityDataframe(covariateData = covariatesTemp)
+```
+
+```{r}
+inputTemp %>% group_by(covariateName) %>% distinct()
+length(unique(inputTemp$covariateName))
+# unique(inputTemp$covariateName)
+length(unique(inputTemp$covariateId))
+```
+
+```{r}
+Ho_conditions <- read.csv("final_CodeListToInclude.csv")
+```
+
+```{r}
+dbCovIds <- inputTemp%>% distinct(covariateId) %>%
+  mutate(newCovId = as.numeric(gsub('.{3}$', '', covariateId)))
+HoCovIds <- Ho_conditions %>% distinct(newSnomedCodes)
+
+# Codes included 
+HoCovIds$newSnomedCodes[HoCovIds$newSnomedCodes%in% dbCovIds$newCovId]
+# Codes not included
+notIncluded <- HoCovIds$newSnomedCodes[!(HoCovIds$newSnomedCodes%in% dbCovIds$newCovId)]
+
+notInDf <- Ho_conditions %>% filter(newSnomedCodes %in% notIncluded)
+
+covTemp2 <- FeatureExtraction::loadCovariateData("experimentation/Multimorbidity_20240110_old/tempCovs_cdm_O_selectedConceptIds_obsrvtn_4")
+inputTemp2 <- createMultimorbidityDataframe(covariateData = covariatesTemp)
+dbCovIds2 <- inputTemp2 %>% distinct(covariateId) %>%
+  mutate(newCovId = as.numeric(gsub('.{3}$', '', covariateId)))
+notIncluded2 <- HoCovIds$newSnomedCodes[!(HoCovIds$newSnomedCodes%in% dbCovIds2$newCovId)]
+```
+
+```{r}
+
+Ho_conditions$newSnomedNames %in% unique(inputTemp$covariateName)
+
+
+inputTemp%>% distinct(covariateId) %>% count()
+length(Ho_conditions$newSnomedCodes)
+length(unique(Ho_conditions$newSnomedCodes))
+Ho_conditions %>% group_by(newSnomedCodes) %>% count() %>% filter(n>1)
+
+concepts <- covariatesTemp$covariateRef %>%
+  collect() %>%
+  left_join(
+    Ho_conditions %>%
+      select(Include, Body.system..based.on.ICD.10.chapters., Ho_Name, newSnomedCodes) %>%
+      rename("Body system" = "Body.system..based.on.ICD.10.chapters."), 
+    join_by(conceptId == newSnomedCodes)
+  )
+
+df1 <- inputTemp %>%
+  left_join(
+    concepts %>% select(conceptId, Ho_Name, `Body system`), 
+    by = "conceptId", 
+    na_matches = 'never'
+  )
+
+```
+
+```{r}
+# Merging concepts from Ho et al
+
+concepts_2 <- concepts %>%
+  mutate(Ho_et_al_conditions = case_when(
+    str_detect(condition, "Malignan|lymphoma") ~ "Cancer", 
+    str_detect(condition, "pain|Pain") ~ "Chronic pain",
+    str_detect(condition, "dementia|Dementia") ~ "Dementia",
+    str_detect(condition, "Depress|depress") ~ "Depression",
+    str_detect(condition, "Drug|drug|Tobacco|Medication abuse") ~ "Drug use disorders", 
+    str_detect(condition, "Alcohol|alcohol") ~ "Alcohol use disorders", 
+    str_detect(condition, "Asthma|asthma") ~ "Asthma", 
+    str_detect(condition, "Chronic obstructive") ~ "COPD", 
+    str_detect(condition, "Schizophrenia|psychosis|Psychosis") ~ "Schizophrenia", 
+    str_detect(sourceName, "1 diabetes") ~ "T1DM", 
+    str_detect(sourceName, "2 diabetes") ~ "T2DM", 
+    str_detect(condition, "Osteoporosis") ~ "Osteoporosis", 
+    str_detect(condition, "arthritis|Arthritis|Gout") ~ "Arthritis",
+    str_detect(condition, "Retino|retino|Blind|blind|Macular") ~ "Vision impairment",
+    str_detect(condition, "Hear|Deaf") ~ "Hear impairment",
+    str_detect(condition, "of trauma") ~ "Musculoskeletal impairment due to injury", 
+    str_detect(Category, "Cardiovascular") ~ "Coronary heart disease",
+    str_detect(condition, "Cerebro") ~ "Stroke",
+    str_detect(Category, "Neurological") ~ "Neurological", 
+    str_detect(condition, "HIV") ~ "HIV", 
+    str_detect(condition, "bowel syndrome|colitis") ~ "IBD", 
+    str_detect(condition, "stress") ~ "Anxiety",
+    Category ==  "Psychological" & str_detect(condition, "Schizophrenia|psychosis|Psychosis|Depress|depress|stress", negate =TRUE) ~ "Other psychological", 
+    Category == "Skin" ~ "Skin ulcers", 
+    str_detect(condition, "Anorexia") ~ "Anorexia/Bulimia",
+    str_detect(condition, "Obesity") ~ "Obesity",
+    str_detect(condition, "Incontinence Urine") ~ "Incontinence Urine",
+    str_detect(condition, "Chronic bronchitis") ~ "Chronic bronchitis", 
+    .default = NA
+  ))
+
+concepts_2 <- concepts_2 %>%
+  mutate(Ho_and_ICPC = case_when(
+    is.na(Ho_et_al_conditions) ~ condition, 
+    .default = Ho_et_al_conditions
+  ))
+
+concepts <- concepts_2 %>%
+  dplyr::rename(
+    "Snomed_condition" = "condition", 
+    "condition" = "newCondNames")
+```
+
+```{r, include=FALSE}
+inputTemp2 <- concepts %>%
+  select(conceptId, refined_ICPCcode, conceptName, condition) %>%
+  inner_join(inputTemp, join_by(conceptId == conceptId), multiple = "all") %>%
+  group_by(rowId, condition) %>%
+  slice(1L) %>%
+  ungroup()
+
+######
+
+df_inputTemp <- as.data.frame(dplyr::select(inputTemp2, c(rowId, condition)))
+str(df_inputTemp)
+
+noDiseaseTemp <- inputTemp %>%
+  filter(is.na(conceptId)) %>%
+  select(rowId, covariateName)
+
+df_inputTemp2 <- bind_rows(df_inputTemp, noDiseaseTemp) %>% select(rowId, condition)
+```
+
+## Methods
+
+```{r, include=FALSE}
+# c1 <- concepts %>% 
+#   select(refined_ICPCcode, condition, Category) %>%
+#   distinct() %>%
+#   DT::datatable(caption = "List of conditions included in the study.")
+
+c1 <- concepts %>% 
+  select(refined_ICPCcode, condition, Category) %>%
+  distinct() %>%
+  rename("ICPC-1 Code" = "refined_ICPCcode") %>%
+  gt() %>%
+  tab_caption(caption = "Table S2: Conditions included in the definition of multimorbidity.")
+
+c2 <- concepts %>% 
+  select(refined_ICPCcode, condition, Category) %>%
+  distinct() %>%
+  group_by(Category) %>%
+  count() %>%
+  ungroup() %>%
+  rename("Number of Conditions" = "n") %>%
+  gt() %>%
+  tab_caption(caption = "Table S1: Categorisation of diseases included in the definition of Multimorbidity.")
+```
+
+### Categorisation of conditions included.
+
+Table S1: Categorisation of diseases included in the definition of Multimorbidity.\
+`r c2`
+
+------------------------------------------------------------------------
+
+### Detailed conditions used.
+
+Table S2: Conditions included in the definition of multimorbidity.\
+`r c1`
+
+------------------------------------------------------------------------
+
+```{r, include=FALSE}
+# Some numbers
+population <- length(unique(df_inputTemp2$rowId))
+populationWithCondition <- df_inputTemp2 %>%
+  filter(condition != "") %>%
+  distinct(rowId) %>%
+  count() %>%
+  pull()
+
+populationWithoutConditionDf <- df_inputTemp2 %>%
+  filter(condition == "") %>%
+  distinct(rowId) %>%
+  count() %>%
+  rename("NoPeople"= "n") %>%
+  mutate(n = 0)
+
+populationWithoutCondition <- population -populationWithCondition
+
+peopleWithoutConditionDf <- df_inputTemp2 %>%
+  filter(is.na(condition)) %>%
+  select(rowId, condition) %>%
+  rename("n" = "condition") %>%
+  mutate(n = 0)
+
+## how many people have what condition
+numberOfCOnditions <- df_inputTemp2 %>%
+  filter(condition != "") %>%
+  group_by(rowId) %>%
+  summarise(n = n()) %>%
+  group_by(n) %>%
+  summarise(NoPeople = n(), 
+            Perc = (NoPeople/population)*100, 
+            Perc = round(Perc, 5), 
+            PercAmongDisease = (NoPeople/populationWithCondition)*100, 
+            PercAmongDisease = round(PercAmongDisease, 5))
+sum(numberOfCOnditions$NoPeople) == populationWithCondition
+
+numberOfCOnditions %>%
+  filter(n != 1) %>%
+  summarise(NoPeople = sum(NoPeople), 
+            Perc = sum(Perc), 
+            PercAmongDisease = sum(PercAmongDisease))
+
+numberOfCOnditions2 <- df_inputTemp2 %>%
+  filter(!is.na(condition)) %>%
+  group_by(rowId) %>%
+  summarise(n = n()) %>%
+  bind_rows(peopleWithoutConditionDf) %>%
+  group_by(n) %>%
+  summarise(NoPeople = n()) 
+
+rowIdPeopleWithMultimorbidity <- df_inputTemp2 %>%
+  filter(!is.na(condition)) %>%
+  group_by(rowId) %>%
+  summarise(n = n()) %>%
+  ungroup() %>%
+  filter(n >=2)
+
+nrow(rowIdPeopleWithMultimorbidity)/population
+
+peopleWithMultimorbidityDF <- inner_join(rowIdPeopleWithMultimorbidity, df_inputTemp2, by = "rowId") 
+length(unique(peopleWithMultimorbidityDF$rowId))
+
+peopleWithMultimorbidityDF %>%
+  group_by(condition) %>%
+  summarise(n = n()) %>%
+  mutate(perc = (n/length(unique(peopleWithMultimorbidityDF$rowId))) * 100 ) %>%
+  arrange(desc(perc))
+
+gdf <- inputTemp %>% 
+  filter(rowId %in% peopleWithMultimorbidityDF$rowId) %>%
+  select(rowId, gender) %>%
+  distinct() %>%
+  inner_join(peopleWithMultimorbidityDF, by = "rowId", multiple = "all")
+
+gdf_Time <- gdf %>%
+  inner_join(inputTemp2 %>% select(rowId, condition, age, timeId) %>% distinct(), by = join_by(rowId == rowId, condition == condition), multiple = "all")
+
+baselineDf1 <- gdf_Time %>%
+  filter(timeId == 0) %>%
+  group_by(rowId) %>%
+  mutate(n = n()) %>%
+  ungroup() %>%
+  mutate(multimorbid = case_when(
+           n >=2 ~ "Yes", 
+           .default = "No"
+         )) 
+
+baselineDf <- inputTemp %>% 
+  select(rowId, age, gender) %>%
+  distinct() %>%
+  mutate(multimorbid = case_when(
+    rowId %in% baselineDf1$rowId ~ "Yes", 
+    .default = "No"
+  ))
+
+malePopulation <- baselineDf %>% 
+  select(rowId, gender) %>%
+  filter(gender == "Male") %>%
+  nrow() 
+
+femalePopulation <- baselineDf %>% 
+  select(rowId, gender) %>%
+  filter(gender == "Female") %>%
+  nrow() 
+```
+
+## Results
+
+### Baseline Characteristics
+
+```{r, include=FALSE}
+# inputTemp %>%
+#   select(rowId, age, gender) %>%
+#   distinct() %>% 
+#   summarise(N = n(), 
+#             N_mean_age = mean(age)) %>%
+#   bind_rows(inputTemp %>%
+#   select(rowId, age, gender) %>%
+#   distinct() %>%
+#     group_by(gender) %>%
+#     summarise(N_g = n(), 
+#               age_g = mean(age)))
+# 
+# inputTemp %>%
+#   select(rowId, age, gender) %>%
+#   distinct() %>% 
+#   filter(gender == "Male") %>%
+#   summarise(mean_age = as.numeric(sum(age)/n()))
+
+
+t1 <- tableone::CreateTableOne(data = baselineDf, vars = c("age", "multimorbid"), factorVars = c("multimorbid"), addOverall = TRUE, strata = "gender")
+t1
+
+t1_gt <- as.data.frame(print(t1, quote = FALSE, noSpaces = TRUE, printToggle = FALSE, formatOptions = list(big.mark = ","))) %>%
+  mutate(name = rownames(.)) %>%
+  select(name, 1:4) %>%
+  rename(" " = "name") %>%
+  gt() %>%
+  tab_caption(caption = "Table 1: Baseline characteristics.")
+  
+```
+
+Table 1: Baseline characteristics.\
+`r t1_gt`
+
+```{r, include=FALSE}
+inputTemp2 %>% 
+  select(rowId, gender, condition) %>%
+  inner_join(baselineDf %>% select(rowId, multimorbid), by = "rowId") %>%
+  group_by(condition, multimorbid) %>%
+  count() %>%
+  pivot_wider(id_cols = condition, names_from = multimorbid, values_from = n)
+
+t2 <- inputTemp2 %>% 
+  select(rowId, gender, condition) %>%
+  inner_join(baselineDf %>% select(rowId, multimorbid), by = "rowId") %>%
+  group_by(condition) %>%
+  summarise(n = n()) %>%
+  inner_join(
+    inputTemp2 %>% 
+  select(rowId, gender, condition) %>%
+  inner_join(baselineDf %>% select(rowId, multimorbid), by = "rowId") %>%
+  group_by(condition, multimorbid) %>%
+  count() %>%
+  ungroup()%>%
+  pivot_wider(id_cols = condition, names_from = multimorbid, values_from = n), 
+  by = "condition"
+  ) %>%
+  mutate(overall_perc = round((n/population)* 100, 2), 
+         No_perc = round((No / populationWithoutCondition) * 100, 2), 
+         Yes_perc = round((Yes / nrow(rowIdPeopleWithMultimorbidity))*100, 2)) %>%
+  select(condition, n, overall_perc, No, No_perc, Yes, Yes_perc) %>%
+  mutate("N (%)" = paste0(format(n, big.mark=","), " (", overall_perc, ")"), 
+         "Not Multimorbid (%)" = paste0(format(No, big.mark=","), " (", No_perc, ")"), 
+         "Multimorbid (%)" = paste0(format(Yes, big.mark=","), " (", Yes_perc, ")")) %>%
+  select(condition, ends_with("(%)")) %>%
+  rename("Condition" = "condition") 
+  # kable() %>%
+  # add_header_above(c(" ", "Overall" = 2, "Multimorbid" = 4))
+
+```
+
+Table S3: Prevalence of each condition at baseline.\
+`r t2 %>% gt()`
+
+------------------------------------------------------------------------
+
+### Prevalence
+
+#### Overall Prevalence of Conditions and stratified by gender
+
+```{r, include=FALSE}
+numberOfCOnditions22 <- df_inputTemp %>%
+  group_by(rowId) %>%
+  summarise(n = n()) %>%
+  bind_rows(peopleWithoutConditionDf) %>%
+  group_by(n) %>%
+  summarise(NoPeople = n())
+# 
+# numberOfCOnditions2 <- df_inputTemp2 %>%
+#   group_by(rowId) %>%
+#   summarise(n = n()) %>%
+#   ungroup() %>%
+#   group_by(n) %>%
+#   summarise(NoPeople = n())
+
+# saveRDS(numberOfCOnditions22, "experimentation/results_presentation/numberOfConditions22.Rds")
+
+# numberOfCOnditions22 <- readRDS("results_presentation/numberOfConditions22.Rds")
+tableForNumberOfConditions <- numberOfCOnditions22 %>%
+  mutate(n = as.character(n)) %>%
+  add_row(n = "Eight or More", NoPeople = numberOfCOnditions22 %>% dplyr::filter(n>= 8) %>% summarise(new = sum(NoPeople)) %>% pull()) %>%
+  mutate(Perc = (NoPeople/population)*100, 
+            Perc = round(Perc, 2) 
+            # PercAmongDisease = (NoPeople/populationWithCondition)*100, 
+            # PercAmongDisease = round(PercAmongDisease, 5)
+         ) %>%
+ filter(!(n %in% c(8:30))) 
+```
+
+```{r, include=FALSE}
+# tableForNumberOfConditions %>% gt() %>% tab_caption(caption = "Table 2: Prevalence of number of conditions in IPCI")
+```
+
+```{r, include=FALSE}
+numberOfCOnditions4 <- inputTemp%>%
+  # inner_join(baselineDf %>% select(rowId, gender), by = "rowId") %>%
+  mutate(condPres = case_when(
+    is.na(covariateId) ~ 0, 
+    .default = 1
+  )) %>%
+  select(rowId, gender, condPres) %>%
+  group_by(rowId, gender) %>%
+  summarise(n = sum(condPres)) %>%
+  ungroup() %>%
+  # mutate(n = as.character(n)) %>%
+  mutate(NumberOfConditions = case_when(
+    n == 1 ~ "1",
+    n == 2 ~ "2",
+    n == 3 ~ "3",
+    n == 4 ~ "4",
+    n == 5 ~ "5",
+    n == 6 ~ "6",
+    n == 7 ~ "7",
+    n >= 8 ~ "Eight or More", 
+    .default = "0"))
+# saveRDS(numberOfCOnditions4, "experimentation/results_presentation/numberOfConditions4.Rds")
+
+# numberOfCOnditions4 <- readRDS("results_presentation/numberOfConditions4.Rds")
+
+# t3 <- CreateTableOne(data = numberOfCOnditions4, vars = c("NumberOfConditions"), strata = "gender")
+# 
+# t3_gt <- as.data.frame(print(t3, quote = FALSE, noSpaces = TRUE, printToggle = FALSE, formatOptions = list(big.mark = ","))) %>%
+#   mutate(name = rownames(.)) %>%
+#   select(name, 1:2)  
+
+t2new <- numberOfCOnditions4 %>% group_by(gender, NumberOfConditions) %>%
+  summarise(n = n()) %>%
+  pivot_wider(id_cols = NumberOfConditions, names_from = gender, values_from = n) %>%
+  left_join(tableForNumberOfConditions, by = join_by("NumberOfConditions"=="n")) %>%
+  mutate(Fem_perc = round(Female/population *100, 2 ), 
+         Mal_perc = round(Male/population * 100, 2), 
+         `Female (%)` = paste0(format(Female, big.mark=","), " (", Fem_perc, ")"), 
+         `Male (%)` = paste0(format(Male, big.mark=","), " (", Mal_perc, ")"), 
+         Overall = paste0(format(NoPeople, big.mark=","), " (", Perc, ")")
+         ) %>%
+  select(NumberOfConditions, Overall, ends_with("(%)"))
+```
+
+Table 2: Prevalence of number of conditions recorded for each patient. `r t2new %>% gt() %>% tab_caption(caption = "Table 2: Prevalence of number of conditions in IPCI")`
+
+------------------------------------------------------------------------
+
+```{r, include=FALSE}
+numberOfCOnditions3 <- df_inputTemp2 %>%
+  inner_join(baselineDf %>% select(rowId, gender), by = "rowId") %>%
+  group_by(rowId, gender) %>%
+  summarise(n = n()) %>%
+  ungroup() %>%
+  group_by(n, gender) %>%
+  summarise(NoPeople = n())
+
+# saveRDS(numberOfCOnditions3, "experimentation/results_presentation/numberOfConditions3.Rds")
+ 
+# numberOfCOnditions3 <- readRDS("results_presentation/numberOfConditions3.Rds")
+
+nc3 <- numberOfCOnditions3 %>% 
+  pivot_wider(id_cols = "n", names_from = gender, values_from = NoPeople) %>%
+  filter(n != 1) 
+
+t4 <-   tibble(Females = sum(nc3$Female), 
+            Males = sum(nc3$Male, na.rm = TRUE)) %>%
+    mutate(F_perc = (Females / population )* 100, 
+            M_perc = (Males / population )* 100) %>%
+  rename("Female (%)" = "F_perc", 
+         "Male (%)" = "M_perc") %>%
+  mutate(`% F among MM` = (Females / (Females + Males)) * 100, 
+         `% M among MM` = (Males / (Females + Males)) * 100)
+
+populationWithMultimorbidity <- t4$Females + t4$Males
+# t4$Females/populationWithMultimorbidity *100
+```
+
+------------------------------------------------------------------------
+
+Overall, prevalence of multimorbidity in IPCI using N'Goran's definition is `r format(populationWithMultimorbidity, big.mark=",")`, acounting for `r round((populationWithMultimorbidity)/ population *100, 2)`% of the total population.
+
+------------------------------------------------------------------------
+
+```{r, include=FALSE}
+# Patients with multimorbidity
+# gdf %>%
+#   select(rowId, gender) %>%
+#   distinct() %>%
+#   group_by(gender) %>%
+#   summarise(n = n(), 
+#             perc = (n/length(unique(peopleWithMultimorbidityDF$rowId)))*100)
+# 
+# gdf_Time %>%
+#   group_by(rowId) %>%
+#   slice(1L) %>%
+#   ungroup %>%
+#   summarise(mean_age = mean(age))
+# 
+# gdf_Time %>% 
+#   select(rowId, gender, age) %>%
+#   distinct() %>%
+#   summarise(mean_age = mean(age))
+# 
+# gdf_Time %>% 
+#   select(rowId, gender, age) %>%
+#   distinct() %>%
+#   group_by(gender) %>%
+#   summarise(mean_age = mean(age))
+
+t5 <- tibble(Gender = c("Female", "Male"), 
+             N = c(sum(nc3$Female), sum(nc3$Male, na.rm = TRUE))) %>%
+  inner_join(gdf_Time %>% 
+  select(rowId, gender, age) %>%
+  distinct() %>%
+  group_by(gender) %>%
+  summarise(mean_age = mean(age), 
+            sd_age = sd(age)), by = join_by("Gender" == "gender")) %>%
+  mutate(`N (%)` = (N/population)*100, 
+         `% among MM` = (N/populationWithMultimorbidity)*100, 
+         `% among F` = (N/femalePopulation)* 100, 
+         `% among M` = (N/malePopulation)* 100, 
+         `% among F` = case_when(
+           Gender == "Male" ~ 0, 
+           .default = `% among F`
+         ),
+         `% among M` = case_when(
+           Gender == "Female" ~ 0, 
+           .default = `% among M`
+         ), 
+         N = format(N, big.mark=",")
+         )
+```
+
+Table 3: Characterization of multimorbid population. `r t5 %>% gt() %>% tab_caption(caption = "Characterization of multimorbid population.")`
+
+------------------------------------------------------------------------
+
+### Multimorbid Conditions
+
+```{r include=FALSE}
+t6.0 <- gdf_Time %>%
+  select(rowId, condition) %>%
+  group_by(condition) %>%
+  summarise(Overall = n()) %>%
+  mutate(Overall_perc = round(Overall / populationWithMultimorbidity * 100, 2), 
+         "Overall (%)" = paste0(format(Overall, big.mark = ","), " (", Overall_perc, ")")) %>%
+  select(condition, ends_with("(%)"))
+
+t6.1 <- gdf_Time %>% 
+  select(rowId, gender, condition) %>%
+  group_by(gender, condition) %>%
+  summarise(N = n()) %>%
+  pivot_wider(id_cols = condition, names_from = gender, values_from = N) %>%
+  mutate(`F_perc` = round((Female/populationWithMultimorbidity )* 100, 2), 
+         `M_perc` = round((Male/populationWithMultimorbidity )* 100, 2), 
+         "Female (%)" = paste0(format(Female, big.mark=","), " (", F_perc, ")"), 
+         "Male (%)" = paste0(format(Male, big.mark=","), " (", M_perc, ")")) %>%
+  select(condition, ends_with("(%)")) %>%
+  rename("Condition" = "condition")
+  # DT::datatable(caption = "Prevalence of Individual Conditions within Multimorbid Patients") 
+
+t6 <- right_join(t6.1, t6.0, by = join_by("Condition"== "condition")) %>%
+  select(Condition, "Overall (%)", everything())
+
+```
+
+#### Prevalence of Conditions in multimorbid population
+
+Table 4: Prevalence of conditions with the multimorbid population.
+
+`r t6 %>% gt() %>% tab_caption(caption = "Prevalence of conditions with the multimorbid population.")`
+
+```{r, include=FALSE}
+mm_df <- inputTemp %>%
+  group_by(rowId) %>%
+  mutate(NoConditions = n())%>%
+  ungroup() %>%
+  arrange(rowId, timeId) %>%
+  mutate(conditionAge = case_when(
+    NoConditions >= 2 ~ age + round(-timeId/365), 
+    .default = NA
+  ))
+
+mm_df2 <- mm_df %>%
+  filter(NoConditions >=2) %>%
+  arrange(rowId, conditionAge)
+
+mm_df2 %>% distinct(rowId) %>% count
+populationWithMultimorbidity
+
+mm_df2 <- mm_df2 %>%
+  group_by(rowId) %>%
+  mutate(multimorbidAge = conditionAge[2]) %>%
+  ungroup()
+  
+
+pretty_symmetric <- function(range, n = 5){
+  range_1 <- c(-range[1], range[2])
+  range_2 <- c(range[1], -range[2])
+  
+  pretty_vec_1 <- pretty(range_1)
+  pretty_vec_2 <- pretty(range_2)
+  
+  pretty(
+    c(pretty_vec_1, pretty_vec_2), 
+    n = n
+  )
+}  
+
+mm_df3 <- mm_df2 %>%
+  group_by(rowId) %>%
+  mutate(lastConditionAge = last(conditionAge)) %>%
+  ungroup()
+
+mm_df4 <- mm_df3 %>%
+  group_by(rowId) %>%
+  mutate(maxConditionAge = max(conditionAge)) %>%
+  ungroup()
+
+all.equal(mm_df4$lastConditionAge, mm_df4$maxConditionAge)
+```
+
+```{r, include=FALSE}
+newPlotDf5 <- mm_df4 %>%
+  group_by(rowId) %>%
+  slice(1L) %>%
+  ungroup() %>%
+  mutate(ageGroup = case_when(
+    maxConditionAge < 25 ~ "18-24", 
+    maxConditionAge >= 25 & maxConditionAge < 30 ~ "25-29", 
+    maxConditionAge >= 30 & maxConditionAge < 35 ~ "30-34", 
+    maxConditionAge >= 35 & maxConditionAge < 40 ~ "35-39", 
+    maxConditionAge >= 40 & maxConditionAge < 45 ~ "40-44",  
+    maxConditionAge >= 45 & maxConditionAge < 50 ~ "45-49", 
+    maxConditionAge >= 50 & maxConditionAge < 55 ~ "50-54", 
+    maxConditionAge >= 55 & maxConditionAge < 60 ~ "55-59", 
+    maxConditionAge >= 60 & maxConditionAge < 65 ~ "60-64",
+    maxConditionAge >= 65 & maxConditionAge < 70 ~ "65-69", 
+    maxConditionAge >= 70 & maxConditionAge < 75 ~ "70-74",
+    maxConditionAge >= 75 & maxConditionAge < 80 ~ "75-79", 
+    maxConditionAge >= 80 & maxConditionAge < 85 ~ "80-84",
+    maxConditionAge >= 85 & maxConditionAge < 90 ~ "85-89", 
+    maxConditionAge >= 90 & maxConditionAge < 95 ~ "90-94",
+    maxConditionAge >= 95 & maxConditionAge < 100 ~ "95-99", 
+    maxConditionAge >= 100 ~ "100+"  
+  ), 
+  groupedConditions = case_when(
+    NoConditions >= 8 ~ "8+", 
+    .default = as.character(NoConditions)
+  ), 
+  ageGroup = fct_relevel(ageGroup, "100+", after = Inf)) %>%
+  # mutate(N = case_when(
+  #   gender == "Male" ~ -1*N, 
+  #   .default = N))
+    # %>%
+  select(rowId, gender, ageGroup, groupedConditions)
+
+newPlotDf6 <- newPlotDf5 %>%
+  group_by(gender, ageGroup, groupedConditions) %>%
+  summarize(N = n())
+
+# Figure 2: Multimorbid patients per age group stratified by gender 
+p2 <- ggplot()+
+  geom_bar(data = newPlotDf6[newPlotDf6$gender=="Male",], aes(x = ageGroup, y = N, fill = groupedConditions), stat = "identity",  alpha = 0.8, position = position_stack(reverse = TRUE))+
+  geom_bar(data = newPlotDf6[newPlotDf6$gender=="Female",], aes(x = ageGroup, y = -N, fill = groupedConditions), stat = "identity", alpha = 0.8, position = position_stack(reverse = TRUE)) +
+  facet_share(~gender, dir = "h",reverse_num = TRUE, scales = "free", switch = "both", strip.position = "top") + coord_flip()+
+    labs(subtitle = "N = 553,262",
+   caption = "NOTE: \n Patient's age at the last recorded condition was used to stratify patients in each age group.\n
+   Figure 2: Multimorbid patients per age group stratified by gender.", 
+   fill = "No of Conditions")+ 
+  scale_color_manual(name = "", values = c(Male = "#3E606F", Female = "#8C3F4D"),
+                 # labels = c("Females", "Males")
+                 )+
+  theme_classic() +
+  theme(text = element_text(color = "#3A3F4A"),
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.grid.major.x = element_line(linetype = "dotted", size = 0.2, color = "#3A3F4A"),
+    # axis.title = element_blank(),
+    plot.title = element_text(face = "bold", size = 16, margin = margin(b = 10), hjust = 0.030),
+    plot.subtitle = element_text(size = 12, hjust = 0.030),
+    plot.caption = element_text(size = 8, color = "#5D646F", hjust = 0.0),
+    axis.text.x = element_text(size = 12, color = "#5D646F"),
+    # axis.text.y = element_blank(),
+    # strip.text = element_text(color = "#5D646F", size = 18, face = "bold", hjust = 0.030),
+    plot.background = element_rect(fill = "#EFF2F4"),
+    # plot.margin = unit(c(1, 1, 1, 1), "cm"),
+    legend.position = "bottom",
+    legend.spacing = unit(0.1, "lines"),
+    legend.text  = element_text(size = 8),
+    legend.text.align = 0, 
+    legend.direction = "horizontal"
+    ) +
+  guides(fill = guide_legend(nrow = 1))
+```
+
+```{r, include=FALSE}
+newPlotDf3 <- mm_df2 %>%
+  group_by(rowId) %>%
+  slice(1L) %>%
+  ungroup() %>%
+  mutate(ageGroup = case_when(
+    multimorbidAge < 25 ~ "18-24", 
+    multimorbidAge >= 25 & multimorbidAge < 30 ~ "25-29", 
+    multimorbidAge >= 30 & multimorbidAge < 35 ~ "30-34", 
+    multimorbidAge >= 35 & multimorbidAge < 40 ~ "35-39", 
+    multimorbidAge >= 40 & multimorbidAge < 45 ~ "40-44",  
+    multimorbidAge >= 45 & multimorbidAge < 50 ~ "45-49", 
+    multimorbidAge >= 50 & multimorbidAge < 55 ~ "50-54", 
+    multimorbidAge >= 55 & multimorbidAge < 60 ~ "55-59", 
+    multimorbidAge >= 60 & multimorbidAge < 65 ~ "60-64",
+    multimorbidAge >= 65 & multimorbidAge < 70 ~ "65-69", 
+    multimorbidAge >= 70 & multimorbidAge < 75 ~ "70-74",
+    multimorbidAge >= 75 & multimorbidAge < 80 ~ "75-79", 
+    multimorbidAge >= 80 & multimorbidAge < 85 ~ "80-84",
+    multimorbidAge >= 85 & multimorbidAge < 90 ~ "85-89", 
+    multimorbidAge >= 90 & multimorbidAge < 95 ~ "90-94",
+    multimorbidAge >= 95 & multimorbidAge < 100 ~ "95-99", 
+    multimorbidAge >= 100 ~ "100+"  
+  ), 
+  groupedConditions = case_when(
+    NoConditions >= 8 ~ "8+", 
+    .default = as.character(NoConditions)
+  ), 
+  ageGroup = fct_relevel(ageGroup, "100+", after = Inf)) %>%
+  # mutate(N = case_when(
+  #   gender == "Male" ~ -1*N, 
+  #   .default = N))
+    # %>%
+  select(rowId, gender, ageGroup, groupedConditions)
+
+newPlotDf4 <- newPlotDf3 %>%
+  group_by(gender, ageGroup, groupedConditions) %>%
+  summarize(N = n())
+newPlotDf7 <- newPlotDf4 %>%
+  group_by(gender, ageGroup) %>%
+  summarise(N = sum(N))
+
+p1 <- ggplot(data = newPlotDf7,  aes(x = ageGroup, y = N, fill = gender))+
+  geom_bar(stat = "identity", position = "dodge", alpha = 0.8) +
+  scale_fill_manual(name = "", values = c(Male = "#3E606F", Female = "#8C3F4D"))+
+  # geom_bar(data = newPlotDf4[newPlotDf4$gender=="Male",], aes(x = ageGroup, y = N), stat = "identity",  alpha = 0.8, position = position_stack(reverse = TRUE), fill =  "#3E606F")+
+  # geom_bar(data = newPlotDf4[newPlotDf4$gender=="Female",], aes(x = ageGroup, y = N), stat = "identity", alpha = 0.8, position = position_stack(reverse = TRUE), fill = "#8C3F4D") +
+  # facet_share(~gender, dir = "h",reverse_num = TRUE, scales = "free", switch = "both", strip.position = "top") + coord_flip()+
+    labs(subtitle = "N = 553,262",
+   caption = "Figure 1: Multimorbid patients per age group.", fill = "No of Conditions")+ 
+  scale_color_manual(name = "", values = c(Male = "#3E606F", Female = "#8C3F4D"))+
+  theme_classic() +
+ theme(text = element_text(color = "#3A3F4A"),
+    panel.grid.major.y = element_line(linetype = "dotted", size = 0.1, color = "#3A3F4A"),
+    panel.grid.minor = element_blank(),
+    panel.grid.major.x = element_line(linetype = "dotted", size = 0.1, color = "#3A3F4A"),
+    # axis.title = element_blank(),
+    plot.title = element_text(face = "bold", size = 16, margin = margin(b = 10), hjust = 0.030),
+    plot.subtitle = element_text(size = 12, hjust = 0.030),
+    plot.caption = element_text(size = 8, color = "#5D646F", hjust = 0.0),
+    axis.text.x = element_text(size = 12, color = "#5D646F", angle = 45,  hjust=1),
+    # axis.text.y = element_blank(),
+    # strip.text = element_text(color = "#5D646F", size = 18, face = "bold", hjust = 0.030),
+    plot.background = element_rect(fill = "#EFF2F4"),
+    # plot.margin = unit(c(1, 1, 1, 1), "cm"),
+    legend.position = "bottom",
+    legend.spacing = unit(0.1, "lines"),
+    legend.text  = element_text(size = 8),
+    legend.text.align = 0, 
+    legend.direction = "horizontal"
+    ) +
+  guides(fill = guide_legend(nrow = 1))
+```
+
+```{r, include=FALSE}
+mm_df5 <- inputTemp2 %>%
+  group_by(rowId) %>%
+  filter(n()>= 2) %>%
+  group_by(condition) %>%
+  summarise(N = n()) 
+
+p3 <- mm_df5 %>%
+  arrange(desc(N)) %>%
+  slice_head(n =30) %>%
+  mutate(condition = str_replace_all(condition, " / ", "/")) %>%
+ggplot(aes(x = reorder(condition, -N), y = N)) +
+  geom_bar(stat = "identity", width = 0.9, fill ="#56B4E9") +
+  labs(x = "Condition",
+   subtitle = "",
+   caption = "Figure 3: Top 30 Multimorbid conditions.", 
+   fill = "")+ 
+  scale_x_discrete(labels = function(x) str_wrap(x, width = 20)) +
+  # scale_x_discrete(labels = function(x) str_wrap(x, width = 40))+
+  theme_classic() +
+ theme(text = element_text(color = "#3A3F4A"),
+    panel.grid.major.y = element_line(linetype = "dotted", size = 0.1, color = "#3A3F4A"),
+    panel.grid.minor = element_blank(),
+    panel.grid.major.x = element_line(linetype = "dotted", size = 0.1, color = "#3A3F4A"),
+    # axis.title = element_blank(),
+    plot.title = element_text(face = "bold", size = 16, margin = margin(b = 10), hjust = 0.030),
+    plot.subtitle = element_text(size = 12, hjust = 0.030),
+    plot.caption = element_text(size = 8, color = "#5D646F", hjust = 0.0),
+    axis.text.x = element_text(size = 10, color = "#5D646F", angle = 70,  hjust=1),
+    # axis.text.y = element_blank(),
+    # strip.text = element_text(color = "#5D646F", size = 18, face = "bold", hjust = 0.030),
+    plot.background = element_rect(fill = "#EFF2F4"),
+    # plot.margin = unit(c(1, 1, 1, 1), "cm"),
+    legend.position = "bottom",
+    legend.spacing = unit(0.1, "lines"),
+    legend.text  = element_text(size = 8),
+    legend.text.align = 0, 
+    legend.direction = "horizontal"
+    ) +
+  guides(fill = guide_legend(nrow = 1)) 
+```
+
+Figure 1: Age at multimorbidity diagnosis.
+
+```{r, echo=FALSE}
+p1
+```
+
+Figure 2: Ag3 distribution according to the number of conditions diagnosed.
+
+```{r, echo=FALSE}
+p2
+```
+
+Figure 3: Top 30 Multimobid conditions
+
+```{r, echo=FALSE}
+p3
+```
+
+### Associative conditions
+
+```{r, include=FALSE}
+df_inputTemp <- as.data.frame(dplyr::select(inputTemp2, c(rowId, condition, timeId)))
+
+mmDf <- df_inputTemp %>%
+  group_by(rowId) %>%
+  mutate(size = n()) %>%
+  filter(size!= 1) %>%
+  # arrange(desc(timeId)) %>%
+  mutate(eventId = dense_rank(desc(timeId))) %>%
+  arrange(rowId, eventId) %>%
+  ungroup() 
+
+mmDf <- as.data.frame(mmDf)
+length(unique(mmDf$rowId))
+
+# ARM
+aprioriInput <- as(split(mmDf[,"condition"], mmDf[,"rowId"]), "transactions")
+
+minSup = 10/populationWithMultimorbidity
+res1 <- apriori(aprioriInput, parameter = list(support = minSup, confidence = 0, minlen= 2, maxlen = 5, maxtime = 0), control = list(verbose = TRUE))
+res1
+res2 <- res1[!is.redundant(res1)]
+res2
+```
+
+```{r}
+quality(res2) <- quality(res2) %>% 
+  mutate(hyperConfidence = interestMeasure(res2, measure = "hyperConfidence", transactions = aprioriInput), 
+         stdLift = interestMeasure(res2, "stdLift", transactions = aprioriInput), 
+         chisq = interestMeasure(res2, "chiSquared", transactions = aprioriInput, significance = TRUE), 
+         relativeRisk = interestMeasure(res2, "relativeRisk", transactions = aprioriInput), 
+         phi = interestMeasure(res2, "phi", transactions = aprioriInput), 
+         jaccard = interestMeasure(res2, "jaccard", transactions = aprioriInput), 
+         adjusted_chisq = p.adjust(chisq, "fdr"),
+         size = size(res2))
+
+
+
+quality(res2) %>% 
+  filter(lift > 1) %>%
+  as_tibble()
+
+quality(res2) %>%  
+  filter(lift > 1) %>%
+  summarise(across(where(is.numeric), ~ mean(.x, na.rm = TRUE))) 
+quality(res2) %>%  
+  filter(lift > 1) %>%
+ summarise(across(where(is.numeric), ~ median(.x, na.rm = TRUE)))
+
+quality(res2) %>%  
+  filter(lift > 1 & relativeRisk >2) %>%
+  as_tibble()
+
+head(as(res2, "data.frame"))
+
+res2df <- as(res2, "data.frame") %>%
+  as_tibble() %>%
+  filter(stdLift >= 0.2)
+
+resTest <- as(subset(res2, subset = lift > 1 & relativeRisk>1 & count > 1000 & stdLift > 0.2 & confidence > 0.4), "data.frame") %>% as_tibble()
+
+res2 <- subset(res2, subset = stdLift >0.2)
+res2
+
+res3 <- res2[is.maximal(res2)]
+# is.superset(res3, res3)
+# res3[is.superset(res3)]
+res3
+# resClosed <- res2[is.closed(res2)]
+quality(res3) <- quality(res3) %>%
+  mutate(hyperConfidence = interestMeasure(res3, measure = "hyperConfidence", transactions = aprioriInput), 
+         stdLift = interestMeasure(res3, "stdLift", transactions = aprioriInput), 
+         chisq = interestMeasure(res3, "chiSquared", transactions = aprioriInput, significance = TRUE), 
+         adjusted_chisq = p.adjust(chisq, "fdr"),
+         size = size(res3))
+
+res3df <- as(res3, "data.frame")
+
+```
+
+```{r, include=FALSE}
+quality(res2) <- quality(res2) %>%
+  mutate(hyperConfidence = interestMeasure(res2, measure = "hyperConfidence", transactions = aprioriInput), 
+         stdLift = interestMeasure(res2, "stdLift", transactions = aprioriInput), 
+         chisq = interestMeasure(res2, "chiSquared", transactions = aprioriInput, significance = TRUE), 
+         adjusted_chisq = p.adjust(chisq, "fdr"),
+         size = size(res2))
+
+res2df <- as(res2, "data.frame") %>%
+  as_tibble() %>%
+  filter(stdLift >= 0.2)
+
+res2 <- subset(res2, subset = stdLift >0.2)
+res2
+
+res3 <- res2[is.maximal(res2)]
+# is.superset(res3, res3)
+# res3[is.superset(res3)]
+res3
+# resClosed <- res2[is.closed(res2)]
+quality(res3) <- quality(res3) %>%
+  mutate(hyperConfidence = interestMeasure(res3, measure = "hyperConfidence", transactions = aprioriInput), 
+         stdLift = interestMeasure(res3, "stdLift", transactions = aprioriInput), 
+         chisq = interestMeasure(res3, "chiSquared", transactions = aprioriInput, significance = TRUE), 
+         adjusted_chisq = p.adjust(chisq, "fdr"),
+         size = size(res3))
+
+res3df <- as(res3, "data.frame")
+
+res3
+res4 <- subset(res3, subset = stdLift >= 0.2)
+res4
+
+res5 <- generatingItemsets(res4)
+res5
+res6 <- unique(res5)
+res6
+# res4df <- as(res4, "data.frame") %>%
+#   as_tibble()
+# 
+# res6df <- as(res6, "data.frame") %>%
+#   as_tibble() %>%
+#   mutate(size = size(res6))
+# # size(res6)
+
+
+res7 <- subset(res4, subset = confidence >=0.8)
+
+# res7df <- as(res7, "data.frame") %>%
+#   as_tibble()
+```
+
+```{r, include=FALSE}
+# res4df %>%
+#   group_by(size) %>%
+#   count()
+# res6df %>%
+#   group_by(size) %>%
+#   count()
+# res6df %>%
+#   arrange(size) %>%
+#   slice_head(n=9L)
+# res7df%>%
+#   group_by(size) %>%
+#   count()
+# res7df %>%
+#   arrange(size) %>%
+#   slice_head(n=9L)
+# subset(res4, subset = x %in% res6) 
+# plot(res7)
+
+```
+
+```{r, include=FALSE}
+# res6df %>% 
+#   ggplot(aes(x = count, y = confidence, fill = stdLift)) +
+#   geom_point()
+# 
+# res4df %>% 
+#   ggplot(aes(x = count, y = confidence, color = stdLift)) +
+#   geom_point()
+# 
+# res2df %>% 
+#   ggplot(aes(x = count, y = confidence, fill = stdLift)) +
+#   geom_point()
+# 
+# p <- res3df %>% 
+#   ggplot(aes(x = support, y = confidence, text = rules, size = size)) +
+#   geom_point(alpha = 0.5, aes(color = stdLift))
+# p
+# # ggplotly(p, tooltip = "text")
+# 
+# res3df %>% arrange(desc(stdLift)) %>% head()
+# res3df %>% arrange(desc(support)) %>% head()
+# 
+# res3df %>%
+#   ggplot(aes(x = support, y = stdLift, color = chisq, size = confidence)) +
+#   geom_point()
+# 
+# res3df %>% filter(adjusted_chisq < 0.00000005) %>% count()
+# unique(generatingItemsets(res2))
+# res6.5 <- res6
+# quality(res6.5) <- quality(res6.5) %>%
+#   mutate(allConfidence = interestMeasure(res6.5, measure = "allConfidence", transactions = aprioriInput), 
+#          stdLift = interestMeasure(res6.5, "stdLift", transactions = aprioriInput))
+
+
+# class(res2)
+# addAdditionalMeasures(res6.5, aprioriInput)
+res3g <- associations2igraph(res6, associationsAsNodes = F)
+res3g_undi <- as.undirected(res3g,  mode = "collapse", edge.attr.comb = "sum")
+res3g_undi
+# crc1 <- layout_in_circle(res3g_undi)
+# plot(res3g_undi, layout = crc1)
+# crc <- layout_as_star(res3g_undi, center = V(res3g_undi)[3])
+# plot(res3g_undi, layout = crc)
+# plot(res3g)
+
+set.seed(1)
+# ggraph(res3g, 'circlepack', weight = size) + 
+#   geom_edge_link() + 
+#   geom_node_point(aes(colour = support)) +
+#   coord_fixed()
+
+vertexWeight <- tibble(freq = itemFrequency(aprioriInput), nam = names(itemFrequency(aprioriInput))) %>%
+  mutate(count = freq*populationWithMultimorbidity)
+
+# vertexWeight <- vertexWeight %>%
+#   inner_join(concepts %>% 
+#                select(condition, Category) %>%
+#                distinct(), by = join_by("nam" == "condition")
+#              )
+
+# vertexWeight <- vertexWeight %>%
+#   inner_join(concepts %>% 
+#                select(conceptName, Category) %>%
+#                distinct(), by = join_by("nam" == "conceptName")
+#              )
+
+vertexWeight <- vertexWeight %>%
+  inner_join(concepts %>% 
+               select(condition, Category) %>%
+               distinct(condition), by = join_by("nam" == "condition")
+             )
+
+V(res3g_undi)$weightFreq = vertexWeight %>% filter(nam %in% V(res3g_undi)$label) %>% pull(freq)
+V(res3g_undi)$weightCount = vertexWeight %>% filter(nam %in% V(res3g_undi)$label) %>% pull(count)
+# V(res3g_undi)$groupCategory = vertexWeight %>% filter(nam %in% V(res3g_undi)$label) %>% pull(Category)
+V(res3g_undi)$groupCategory = "oneCat"
+edgeAttrs <- quality(res6)
+E(res3g_undi)$
+res3g_undi
+pg <- ggraph(res3g_undi, "circle") +
+  # geom_edge_arc0(position = "jitter", aes(edge_width = support), color = "grey", alpha = 0.5,
+  #                show.legend = FALSE) +
+  geom_edge_fan0(position = "jitter", aes(edge_width = support), color = "grey", alpha = 0.5,
+                 show.legend = FALSE) +
+  geom_node_point(position = "jitter", aes(size = weightCount, color = groupCategory), show.legend = FALSE)+
+  # geom_node_text(aes(label = label, angle = node_angle(x, y)), hjust = -0.1)+
+  geom_node_text(aes(label = str_wrap(stringr::str_remove_all(string = label, pattern = " / "), width = 15)), check_overlap = TRUE,  size = 3, repel = TRUE, seed = 1) +
+  # geom_text(label.size = NA)+
+  # geom_node_label(aes(label = label), color = "blue") +
+  scale_x_continuous(expand = expansion(mult = 0.1)) +
+   # scale_x_continuous(labels = function(x) str_wrap(x, whitespace_only = TRUE), expand = expansion(mult = 0.1)) + 
+   # scale_label_size_continuous(guide = guide_axis(check.overlap = TRUE), labels = function(x) str_wrap(x, width = 20), size) +
+  ggraph::theme_graph(strip_text_size = 2)
+
+# ggsave(plot = p, filename = "results/OHDSI_Europe/graph.jpeg")
+```
+
+Figure 4: Graph indicating 2 way association between conditions grouped by category.
+
+```{r, echo=FALSE}
+pg
+```
+
+```{r, include=FALSE}
+minSup = 10/populationWithMultimorbidity
+res1 <- apriori(aprioriInput, parameter = list(support = minSup, confidence = 0, minlen= 2, maxlen = 25, maxtime = 0), control = list(verbose = TRUE))
+res1
+res2 <- res1[!is.redundant(res1)]
+
+quality(res2) <- quality(res2) %>%
+  mutate(hyperConfidence = interestMeasure(res2, measure = "hyperConfidence", transactions = aprioriInput), 
+         stdLift = interestMeasure(res2, "stdLift", transactions = aprioriInput), 
+         chisq = interestMeasure(res2, "chiSquared", transactions = aprioriInput, significance = TRUE), 
+         adjusted_chisq = p.adjust(chisq, "fdr"),
+         size = size(res2))
+res2
+res2 <- subset(res2, subset = stdLift >0.2)
+res2
+res2 <- subset(res2, subset = confidence >= 0.5)
+res2
+res2[!is.redundant(res2)]
+
+as(res2, "data.frame")%>% 
+  ggplot(aes(x = support, y = confidence, text = rules, size = size)) +
+  geom_point(alpha = 0.5, aes(color = stdLift))
+# p
+
+
+res2Df <- as(unique(generatingItemsets(res2)), "data.frame")
+res1Df <- as(res2, "data.frame")
+
+test <- res1Df %>%
+  mutate(newRules = stringr::str_replace_all(rules, pattern = "\\} => \\{", ",")) %>%
+  filter(newRules %in% res2Df$items)
+
+# # find all subsets in our rule set using is.subset. Note that we have already sorted our rules by descending lift.
+# rules.subset<-is.subset(res2)
+# # throw away the bottom half, including the diagonal, of our identity matrix
+# rules.subset[lower.tri(rules.subset,diag=T)]<-NA
+# 
+# # find all matching subset rules
+# redundant<-colSums(rules.subset,na.rm = T)>=1
+# # prune matching subset rules
+# rules.pruned<-rules[!redundant]
+
+tab1 <-test %>% 
+  group_by(size) %>%
+  count() %>%
+  ungroup() %>%
+  mutate(size = as.character(size)) %>%
+  do(bind_rows(., tibble(size = "Total", n = nrow(test)))) %>%
+  gt()
+
+tab1
+
+itemFrequencyPlot(aprioriInput)
+tibble(name = names(itemFrequency(aprioriInput)), 
+       freq = itemFrequency(aprioriInput), 
+       pop = itemFrequency(aprioriInput)*populationWithMultimorbidity) %>%
+  slice_max(order_by = freq, n = 20) %>%
+  ggplot(aes(x = name, y = freq))+
+  geom_bar(stat = "identity", alpha = 0.2) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+
+freqs <- tibble(name = names(itemFrequency(aprioriInput)), 
+       freq = itemFrequency(aprioriInput), 
+       pop = itemFrequency(aprioriInput)*populationWithMultimorbidity) %>%
+  arrange(desc(pop))
+freqs[1:12,] %>% pull(name)
+label_data <- freqs %>%
+  mutate(newLabs = abbreviate(name))
+
+number_of_bar <-12
+label_data <- label_data[1:12,] %>% 
+  mutate(rownum = row_number())
+angle <-  90 - 360 * (label_data$rownum-0.5) /12 
+
+label_data$hjust<-ifelse( angle < -90, 1, 0)
+freqs %>%
+  slice_head(n = 12) %>%
+  ggplot(aes(x = reorder(name, -pop, sum), y = pop)) +
+  geom_bar(stat = "identity", fill = "lightblue4") +
+  # coord_polar(start = 0) + 
+   geom_text(data=label_data, aes(x=name, y=pop+10, label=str_wrap(name, 10), hjust=0.5, vjust =-0.1),  color="black", fontface="bold",alpha=0.6, size=3#label_data$hjust,inherit.aes = FALSE 
+                )  +
+  theme_classic() +
+  scale_y_continuous(limits = c(0, 230000), labels = function(x) if_else(x == 0, "0", paste0(as.character(x/1000), "K"))) +
+  theme(#axis.text.x = element_text(angle = 45, hjust = 1),
+        # axis.text = element_blank(),
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    axis.text.y = element_text(face = "bold"),
+    # axis.ticks.y = element_blank(),
+    axis.title = element_blank(), 
+    # panel.grid = element_blank()
+    # plot.margin = unit(rep(1,4), "cm")
+    panel.grid.major.y = element_line(linetype = "dotted", size = 0.1, color = "#3A3F4A"),
+    panel.grid.minor = element_blank(),
+    panel.grid.major.x = element_line(linetype = "dotted", size = 0.1, color = "#3A3F4A")
+    ) 
+
+hjustVec <- c(1, rep(-0.1, 11))
+vjustVec <- c(1.5, rep(0.5, 11))
+freqs %>%
+  slice_head(n = 12) %>%
+  ggplot(aes(x = reorder(name, pop, sum), y = pop)) +
+  geom_col( fill = "darkblue", alpha = 0.7) +
+  # geom_bar(data = freqs[13:24,], aes(x = reorder(name, pop, sum), y = pop),stat = "identity", position = "dodge", fill = "darkblue", alpha = 0.3) +
+  # coord_polar(start = 0) + 
+   geom_text(data=label_data, aes(x=name, y=pop, label=name),  color="black", fontface="bold", size=5, inherit.aes = TRUE, hjust = 0.4)  +
+  coord_flip() +
+  theme_classic() + 
+  scale_y_continuous(limits = c(0, 230000), labels = function(x) if_else(x == 0, "0", paste0(as.character(x/1000), "K"))) +
+  labs(title = "Figure 1: Top 10 multimorbid conditions.")+
+  theme(#axis.text.x = element_text(angle = 45, hjust = 1),
+        # axis.text = element_blank(),
+     plot.title = element_text(face = "bold", size = 16, margin = margin(b = 10), hjust = 0.030),
+    plot.subtitle = element_text(size = 12, hjust = 0.030),
+    plot.caption = element_text(size = 8, color = "#5D646F", hjust = 0.0),
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank(),
+    axis.text.x = element_text(face = "bold"),
+    # axis.ticks.y = element_blank(),
+    axis.title = element_blank(), 
+    panel.grid.major.y = element_line(linetype = "dotted", size = 0.01, color = "#3A3F4A"),
+    panel.grid.minor = element_blank(),
+    panel.grid.major.x = element_line(linetype = "dotted", size = 0.1, color = "#3A3F4A"), 
+    plot.background = element_rect(fill = "#EFF2F4")
+    # panel.grid = element_blank()
+    # plot.margin = unit(rep(1,4), "cm")
+    ) 
+
+# ggsave(filename = "results/OHDSI_Europe/figure4_top10MultimorbidConditions.jpeg", width = 10, height =10)
+
+
+ theme(text = element_text(color = "#3A3F4A"),
+    panel.grid.major.y = element_line(linetype = "dotted", size = 0.1, color = "#3A3F4A"),
+    panel.grid.minor = element_blank(),
+    panel.grid.major.x = element_line(linetype = "dotted", size = 0.1, color = "#3A3F4A"),
+    # axis.title = element_blank(),
+    plot.title = element_text(face = "bold", size = 16, margin = margin(b = 10), hjust = 0.030),
+    plot.subtitle = element_text(size = 12, hjust = 0.030),
+    plot.caption = element_text(size = 8, color = "#5D646F", hjust = 0.0),
+    axis.text.x = element_text(size = 10, color = "#5D646F", angle = 70,  hjust=1),
+    # axis.text.y = element_blank(),
+    # strip.text = element_text(color = "#5D646F", size = 18, face = "bold", hjust = 0.030),
+    plot.background = element_rect(fill = "#EFF2F4"),
+    # plot.margin = unit(c(1, 1, 1, 1), "cm"),
+    legend.position = "bottom",
+    legend.spacing = unit(0.1, "lines"),
+    legend.text  = element_text(size = 8),
+    legend.text.align = 0, 
+    legend.direction = "horizontal"
+    ) +
+  guides(fill = guide_legend(nrow = 1)) 
+```
+
+```{r, include=FALSE}
+res2g <- associations2igraph(res2, associationsAsNodes = F)
+res2g_undi <- as.undirected(res2g,  mode = "collapse", edge.attr.comb = "sum")
+# res2g_nd3 <- networkD3::igraph_to_networkD3(res2g_undi)
+# str(res2g_nd3$links)
+# adjacencyMatrix <- with(res2g_nd3$links, table(source, target))
+
+V(res2g_undi)$name <- abbreviate(V(res2g_undi)$label)
+adjacencyMatrix2 <- igraph::as_adjacency_matrix(res2g_undi, attr = "count", sparse = FALSE, names = TRUE)
+rownames(adjacencyMatrix2)
+colnames(adjacencyMatrix2)
+plotDf <- reshape2::melt(adjacencyMatrix2)
+names(plotDf)
+# abbreviate(V(res2g_undi)$label)
+hm <- ggplot(plotDf, aes(Var1, Var2, fill=value )) + 
+  geom_tile() +
+  scale_fill_viridis(discrete=FALSE)+ 
+  theme_bw() +
+    theme(text = element_text(color = "#3A3F4A"),
+    # panel.grid.major.y = element_line(linetype = "dotted", size = 0.1, color = "#3A3F4A"),
+    panel.grid.minor = element_blank(),
+    # panel.grid.major.x = element_line(linetype = "dotted", size = 0.1, color = "#3A3F4A"),
+    # axis.title = element_blank(),
+    plot.title = element_text(face = "bold", size = 16, margin = margin(b = 10), hjust = 0.030),
+    plot.subtitle = element_text(size = 12, hjust = 0.030),
+    plot.caption = element_text(size = 8, color = "#5D646F", hjust = 0.0),
+    axis.text.x = element_text(size = 9, color = "black", angle = 45,  hjust=1),
+    axis.text.y = element_text(size = 9, color = "black"),
+    # axis.text.y = element_blank(),
+    # strip.text = element_text(color = "#5D646F", size = 18, face = "bold", hjust = 0.030),
+    plot.background = element_rect(fill = "#EFF2F4"),
+    # plot.margin = unit(c(1, 1, 1, 1), "cm"),
+    legend.position = "right",
+    # legend.spacing = unit(0.1, "lines"),
+    # legend.text  = element_text(size = 8),
+    legend.text.align = 0, 
+    # legend.direction = "horizontal"
+    ) 
+
+```
+
+Figure 5: Heatmap of non redundant rules, with minsup \> 0.000018, confidence \> 0.5 and stdLift \> 0.2.
+
+```{r, echo=FALSE,  fig.width=11, fig.height=11}
+# library(grid)
+# grid.newpage()
+hm
+```
+
+(This plot will be improved by adding a legend with the abbreviated names).
+
+```{r, echo=FALSE, warning=FALSE}
+# L <- tibble(name =  V(res2g_undi)$label, abr = abbreviate(V(res2g_undi)$label))
+#  grid.newpage()
+# grid.arrange(
+#   hm,
+#   tableGrob(L),
+#     ncol = 2,
+#   widths = c(1.5, 1)
+# )
+```
+
+Table 5: Set of association rules with minsup 0.000018, minconf 0.5 and stdLift \> 0.2 `r tab1`
+
+```{r, include=FALSE}
+top2 <- test %>%
+  filter(size ==2) %>%
+  arrange(desc(stdLift)) %>%
+  slice_head(n = 10) %>%
+  select(rules, support, count, confidence, stdLift)
+
+top3 <- test %>%
+  filter(size ==3 ) %>%
+  arrange(desc(stdLift)) %>%
+  slice_head(n = 10) %>%
+  select(rules, support, count, confidence, stdLift)
+
+top4 <- test %>%
+  filter(size ==4) %>%
+  arrange(desc(stdLift)) %>%
+  slice_head(n = 10)  %>%
+  select(rules, support, count, confidence, stdLift)
+
+top5 <- test %>%
+  filter(size ==5) %>%
+  arrange(desc(stdLift)) %>%
+  slice_head(n = 10)%>%
+  select(rules, support, count, confidence, stdLift)
+
+top6 <- test %>%
+  filter(size ==6) %>%
+  arrange(desc(stdLift)) %>%
+  slice_head(n = 10)%>%
+  select(rules, support, count, confidence, stdLift)
+```
+
+Table 6: Top rules based on stdLift stratified by size **Size 2**. `r top2 %>% gt()` **Size 3**.\
+`r top3 %>% gt()` **Size 4**. `r top4 %>% gt()` **Size 5**. `r top5 %>% gt()` **Size 6** `r top6 %>% gt()`
+
+# References
