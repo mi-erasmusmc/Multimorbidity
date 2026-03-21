@@ -5,9 +5,9 @@ library(tidyverse)
 library(Multimorbidity)
 library(Eunomia)
 library(FeatureExtraction)
-library(ggpol)
+# library(ggpol)
 library(arules)
-library(gt)
+# library(gt)
 
 ## Set connection and study details
 user = ""
@@ -23,6 +23,7 @@ databaseId = "Euno_1"
 minCellCount = 5
 baseUrl = "" 
 frequentItemsetSettings = createAssociationRuleMiningSettings(support = 0.005, confidence = 0.8)
+studyPopulationSettings = createStudyPopulationSettings()
 databaseName = "Eunomia"
 saveDirectory = "example"
 incremental = TRUE
@@ -39,7 +40,7 @@ analysisDetails <- Multimorbidity::createAnalysisDetails(cdmDatabaseSchema = cdm
                                                          minCellCount = minCellCount, 
                                                          baseUrl = baseUrl, 
                                                          frequentItemsetSettings = frequentItemsetSettings, 
-                                                         # outputFolder, 
+                                                         studyPopulationSettings = studyPopulationSettings,
                                                          databaseName = databaseName, 
                                                          saveDirectory = saveDirectory)
 
@@ -78,7 +79,8 @@ if (!dir.exists(file.path(saveDirectory, "Results", "descriptive"))){
 
 extractCovariates(connectionDetails = connectionDetails, analysisDetails = analysisDetails)
 
-covData <- loadCovariateData(file.path(saveDirectory, "Mulitmorbidity_covs"))
+covData <- loadCovariateData(file.path(saveDirectory, "rawData", "Multimorbidity_covs"))
+targetData <- loadCovariateData(file.path(saveDirectory, "rawData", "Multimorbidity_target"))
 mmDf <- createMultimorbidityDataframe(covariateData = covData)
 
 t1 <- Multimorbidity::getBaselineCharacteristics(mmDf)
