@@ -8,7 +8,7 @@ Description: Provids the neccessary functionalities to perform analysis on top o
 License: Apache License (>= 2)
 Encoding: UTF-8
 Roxygen: list(markdown = TRUE)
-RoxygenNote: 7.3.2
+RoxygenNote: 7.3.3
 Imports: 
     Andromeda,
     arules,
@@ -19,6 +19,16 @@ Imports:
     magrittr,
     CohortGenerator,
     ParallelLogger,
-    DatabaseConnector
+    DatabaseConnector,
+    CDMConnector,
+    IncidencePrevalence,
+    checkmate,
+    duckdb,
+    Capr,
+    DBI,
+    rlang,
+    stringr,
+    tidyr,
+    UpSetR
 URL: https://github.com/mi-erasmusmc/Multimorbidity
 BugReports: https://github.com/mi-erasmusmc/Multimorbidity/issues
