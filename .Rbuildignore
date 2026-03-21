@@ -1,0 +1,17 @@
+^renv$
+^renv\.lock$
+^.*\.Rproj$
+^\.Rproj\.user$
+^LICENSE\.md$
+^experimentation$
+^results$
+^Cellar$
+^test-lib$
+^testLib$
+old_inst
+testData
+testInst
+testLib
+example
+oldFiles
+oldData
