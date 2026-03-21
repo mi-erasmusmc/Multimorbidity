@@ -2,8 +2,9 @@
 createTransactions <- function(multimorbidityDataframe){
   
     input <- multimorbidityDataframe$multimorbidityDf %>%
-      dplyr::filter(multimorbid == "Yes") %>%
+      dplyr::filter(multimorbidDuringStudy == "Yes") %>%
       dplyr::arrange(rowId, dplyr::desc(timeId)) %>% 
+      dplyr::collect() %>%
       dplyr::mutate(eventId = dplyr::dense_rank(dplyr::desc(timeId)),
                     covariateLabel = dplyr::case_when(
         is.na(covariateName) ~ "", 

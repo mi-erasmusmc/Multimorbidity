@@ -16,9 +16,11 @@ filterARs <- function(rules, transactions, ...){
   if ((all(names(input_list) %in% c("support", "confidence", "lift", "hyperConfidence", "stdLift", "chisq", "adjusted_chisq", "relativeRisk", "size"))== TRUE) == FALSE){
     stop("Not all arguments to filter are supported. See documentation for which measures are allowed to filter from.")
   } else {
-    
+    # initialising result value
+    result = nonredundant
     for (variable in names(input_list)){
-      result <- arules::subset(nonredundant, subset = base::eval(base::parse(text = base::paste(quote(variable), input_list[[variable]]))))
+      # result <- arules::subset(nonredundant, subset = base::eval(base::parse(text = base::paste(quote(variable), input_list[[variable]]))))
+      result <- arules::subset(result, subset = base::eval(base::parse(text = base::paste(noquote(variable), input_list[[variable]]))))
     }
   }
   
